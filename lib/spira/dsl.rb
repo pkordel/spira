@@ -46,7 +46,6 @@ module Spira
       @default_vocabulary = uri
     end
 
-
     ##
     # Add a property to this class.  A property is an accessor field that
     # represents an RDF predicate.

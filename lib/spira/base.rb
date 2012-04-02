@@ -76,8 +76,8 @@ module Spira
       #
       # @return [RDF::Repository, nil]
       def repository
-	name = @repository_name || :default
-	Spira.repository(name) || (raise Spira::NoRepositoryError, "#{self} is configured to use :#{name} as a repository, but it has not been set.")
+        name = @repository_name || :default
+        Spira.repository(name) || (raise Spira::NoRepositoryError, "#{self} is configured to use :#{name} as a repository, but it has not been set.")
       end
 
       ##
@@ -111,7 +111,7 @@ module Spira
       # @return  [Spira::Base] The newly created instance
       # @see http://rdf.rubyforge.org/RDF/URI.html
       def for(identifier, attributes = {}, &block)
-	self.project(id_for(identifier), attributes, &block)
+        self.project(id_for(identifier), attributes, &block)
       end
       alias_method :[], :for
 
@@ -130,10 +130,10 @@ module Spira
       # @param [Hash{Symbol => Any}] attributes Initial attributes
       # @return [Spira::Base] the newly created instance
       def project(subject, attributes = {}, &block)
-	if !type.nil? && attributes[:type]
-	  raise TypeError, "#{self} has an RDF type, #{self.type}, and cannot accept one as an argument."
-	end
-	new(attributes.merge(:_subject => subject), &block)
+        if !type.nil? && attributes[:type]
+          raise TypeError, "#{self} has an RDF type, #{self.type}, and cannot accept one as an argument."
+        end
+        new(attributes.merge(:_subject => subject), &block)
       end
 
       ##
@@ -150,38 +150,38 @@ module Spira
       # @see Spira.base_uri
       # @see Spira.for
       def id_for(identifier)
-	case
-	  # Absolute URI's go through unchanged
-	when identifier.is_a?(RDF::URI) && identifier.absolute?
-	  identifier
-	  # We don't have a base URI to join this fragment with, so go ahead and instantiate it as-is.
-	when identifier.is_a?(RDF::URI) && self.base_uri.nil?
-	  identifier
-	  # Blank nodes go through unchanged
-	when identifier.respond_to?(:node?) && identifier.node?
-	  identifier
-	  # Anything that can be an RDF::URI, we re-run this case statement
-	  # on it for the fragment logic above.
-	when identifier.respond_to?(:to_uri) && !identifier.is_a?(RDF::URI)
-	  id_for(identifier.to_uri)
-	  # see comment with #to_uri above, this might be a fragment
-	when identifier.is_a?(Addressable::URI)
-	  id_for(RDF::URI.intern(identifier))
-	  # This is a #to_s or a URI fragment with a base uri.  We'll treat them the same.
-	  # FIXME: when #/ makes it into RDF.rb proper, this can all be wrapped
-	  # into the one case statement above.
-	else
-	  uri = identifier.is_a?(RDF::URI) ? identifier : RDF::URI.intern(identifier.to_s)
-	  case
-	  when uri.absolute?
-	    uri
-	  when self.base_uri.nil?
-	    raise ArgumentError, "Cannot create identifier for #{self} by String without base_uri; an RDF::URI is required"
-	  else
-	    separator = self.base_uri.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
-	    RDF::URI.intern(self.base_uri.to_s + separator + identifier.to_s)
-	  end
-	end
+        case
+          # Absolute URI's go through unchanged
+        when identifier.is_a?(RDF::URI) && identifier.absolute?
+          identifier
+          # We don't have a base URI to join this fragment with, so go ahead and instantiate it as-is.
+        when identifier.is_a?(RDF::URI) && self.base_uri.nil?
+          identifier
+          # Blank nodes go through unchanged
+        when identifier.respond_to?(:node?) && identifier.node?
+          identifier
+          # Anything that can be an RDF::URI, we re-run this case statement
+          # on it for the fragment logic above.
+        when identifier.respond_to?(:to_uri) && !identifier.is_a?(RDF::URI)
+          id_for(identifier.to_uri)
+          # see comment with #to_uri above, this might be a fragment
+        when identifier.is_a?(Addressable::URI)
+          id_for(RDF::URI.intern(identifier))
+          # This is a #to_s or a URI fragment with a base uri.  We'll treat them the same.
+          # FIXME: when #/ makes it into RDF.rb proper, this can all be wrapped
+          # into the one case statement above.
+        else
+          uri = identifier.is_a?(RDF::URI) ? identifier : RDF::URI.intern(identifier.to_s)
+          case
+          when uri.absolute?
+            uri
+          when self.base_uri.nil?
+            raise ArgumentError, "Cannot create identifier for #{self} by String without base_uri; an RDF::URI is required"
+          else
+            separator = self.base_uri.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
+            RDF::URI.intern(self.base_uri.to_s + separator + identifier.to_s)
+          end
+        end
       end
 
 
@@ -193,8 +193,8 @@ module Spira
       # @raise  [Spira::NoTypeError] if the resource class does not have an RDF type declared
       # @return [Integer] the count
       def count
-	raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
-	repository.query(:predicate => RDF.type, :object => @type).subjects.count
+        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
+        repository.query(:predicate => RDF.type, :object => @type).subjects.count
       end
 
       ##
@@ -202,7 +202,7 @@ module Spira
       #
       # @return [void]
       def reload
-	@cache = nil
+        @cache = nil
       end
 
       ##
@@ -220,16 +220,16 @@ module Spira
       # @overload each
       #   @return [Enumerator]
       def each
-	raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
+        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
 
-	if block_given?
-	  repository.query(:predicate => RDF.type, :object => @type).each_subject do |subject|
-	    cache[subject] ||= self.for(subject)
-	    yield cache[subject]
-	  end
-	else
-	  enum_for(:each)
-	end
+        if block_given?
+          repository.query(:predicate => RDF.type, :object => @type).each_subject do |subject|
+            cache[subject] ||= self.for(subject)
+            yield cache[subject]
+          end
+        else
+          enum_for(:each)
+        end
       end
 
       def find_by_id id
@@ -264,7 +264,7 @@ module Spira
       # @return [RDF::Util::Cache]
       # @private
       def cache
-	@cache ||= RDF::Util::Cache.new
+        @cache ||= RDF::Util::Cache.new
       end
 
       ##
@@ -272,7 +272,7 @@ module Spira
       #
       # @return [Array<Symbol>]
       def validators
-	@validators ||= []
+        @validators ||= []
       end
 
       # Build a Ruby value from an RDF value.
@@ -310,7 +310,7 @@ module Spira
           else
             klass.serialize(value)
           end
-	else
+        else
           raise TypeError, "Unable to serialize #{value} as #{type}"
         end
       end
@@ -366,16 +366,16 @@ module Spira
       # @return Spira::Type
       # @private
       def type_for(type)
-	case
-	when type.nil?
-	  Spira::Types::Any
-	when type.is_a?(Symbol) || type.is_a?(String)
-	  type
-	when !(Spira.types[type].nil?)
-	  Spira.types[type]
-	else
-	  raise TypeError, "Unrecognized type: #{type}"
-	end
+        case
+        when type.nil?
+          Spira::Types::Any
+        when type.is_a?(Symbol) || type.is_a?(String)
+          type
+        when !(Spira.types[type].nil?)
+          Spira.types[type]
+        else
+          raise TypeError, "Unrecognized type: #{type}"
+        end
       end
 
       ##
@@ -386,16 +386,16 @@ module Spira
       # @return [RDF::URI]
       # @private
       def predicate_for(predicate, name)
-	case
-	when predicate.respond_to?(:to_uri) && predicate.to_uri.absolute?
-	  predicate
-	when @default_vocabulary.nil?
-	  raise ResourceDeclarationError, "A :predicate option is required for types without a default vocabulary"
-	else
-	  # FIXME: use rdf.rb smart separator after 0.3.0 release
-	  separator = @default_vocabulary.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
-	  RDF::URI.intern(@default_vocabulary.to_s + separator + name.to_s)
-	end
+        case
+        when predicate.respond_to?(:to_uri) && predicate.to_uri.absolute?
+          predicate
+        when @default_vocabulary.nil?
+          raise ResourceDeclarationError, "A :predicate option is required for types without a default vocabulary"
+        else
+          # FIXME: use rdf.rb smart separator after 0.3.0 release
+          separator = @default_vocabulary.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
+          RDF::URI.intern(@default_vocabulary.to_s + separator + name.to_s)
+        end
       end
 
       def find_all conditions, options = {}

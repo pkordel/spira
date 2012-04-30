@@ -3,7 +3,8 @@ require "active_support/hash_with_indifferent_access"
 require "rdf/isomorphic"
 require "set"
 
-require "spira/dsl"
+require "spira/resource"
+require "spira/persistence"
 require "spira/validations"
 require "spira/reflections"
 
@@ -17,17 +18,9 @@ module Spira
     extend ActiveModel::Callbacks
     extend ActiveModel::Naming
     include ActiveModel::Conversion
-
-    extend Spira::DSL
-    extend Spira::Reflections
-    include Spira::Types
-    include Spira::Validations
     include ::RDF, ::RDF::Enumerable, ::RDF::Queryable
 
-    define_model_callbacks :save, :destroy, :create, :update, :validation
-
-    class_attribute :properties, :reflections, :instance_reader => false, :instance_writer => false
-    self.reflections = HashWithIndifferentAccess.new
+    define_model_callbacks :save, :destroy, :create, :update
 
     ##
     # This instance's URI.
@@ -35,18 +28,66 @@ module Spira
     # @return [RDF::URI]
     attr_reader :subject
 
-    ##
-    # The validation errors collection associated with this instance.
-    #
-    # @return [Spira::Errors]
-    # @see Spira::Errors
-    attr_reader :errors
-
-    # Marker for whether or not a field has been set or not;
-    # distinguishes nil and unset.
-    NOT_SET = ::Object.new.freeze
-
     class << self
+      attr_reader :reflections, :properties
+
+      def types
+        Set.new
+      end
+
+      ##
+      # Repository name for this class
+      #
+      # @return [Symbol]
+      def repository_name
+        # should be redefined in children, if required
+        # see also Spira::Resource.configure :repository option
+        :default
+      end
+
+      ##
+      # The base URI for this class.  Attempts to create instances for non-URI
+      # objects will be appended to this base URI.
+      #
+      # @return [Void]
+      def base_uri
+        # should be redefined in children, if required
+        # see also Spira::Resource.configure :base_uri option
+        nil
+      end
+
+      ##
+      # The default vocabulary for this class.  Setting a default vocabulary
+      # will allow properties to be defined without a `:predicate` option.
+      # Predicates will instead be created by appending the property name to
+      # the given string.
+      #
+      # @return [Void]
+      def default_vocabulary
+        # should be redefined in children, if required
+        # see also Spira::Resource.configure :default_vocabulary option
+        nil
+      end
+
+
+      ##
+      # The current repository for this class
+      #
+      # @return [RDF::Repository, nil]
+      def repository
+        Spira.repository(repository_name)
+      end
+
+      ##
+      # Simple finder method.
+      #
+      # @param [Symbol, ID] scope
+      #   scope can be :all, :first or an ID
+      # @param [Hash] args
+      #   args can contain:
+      #     :conditions - Hash of properties and values
+      #     :limit      - Fixnum, limiting the amount of returned records
+      # @return [Spira::Base, Set]
       def find(scope, args = {})
         conditions = args[:conditions] || {}
         options = args.except(:conditions)
@@ -72,129 +113,15 @@ module Spira
       end
 
       ##
-      # The current repository for this class
-      #
-      # @return [RDF::Repository, nil]
-      def repository
-        name = @repository_name || :default
-        Spira.repository(name) || (raise Spira::NoRepositoryError, "#{self} is configured to use :#{name} as a repository, but it has not been set.")
-      end
-
-      ##
-      # Create a new projection instance of this class for the given URI.  If a
-      # class has a base_uri given, and the argument is not an `RDF::URI`, the
-      # given identifier will be appended to the base URI.
-      #
-      # Spira does not have 'find' or 'create' functions.  As RDF identifiers
-      # are globally unique, they all simply 'are'.
-      #
-      # On calling `for`, a new projection is created for the given URI.  The
-      # first time access is attempted on a field, the repository will be
-      # queried for existing attributes, which will be used for the given URI.
-      # Underlying repositories are not accessed at the time of calling `for`.
-      #
-      # A class with a base URI may still be projected for any URI, whether or
-      # not it uses the given resource class' base URI.
-      #
-      # @raise [TypeError] if an RDF type is given in the attributes and one is
-      # given in the attributes.
-      # @raise [ArgumentError] if a non-URI is given and the class does not
-      # have a base URI.
-      # @overload for(uri, attributes = {})
-      #   @param [RDF::URI] uri The URI to create an instance for
-      #   @param [Hash{Symbol => Any}] attributes Initial attributes
-      # @overload for(identifier, attributes = {})
-      #   @param [Any] uri The identifier to append to the base URI for this class
-      #   @param [Hash{Symbol => Any}] attributes Initial attributes
-      # @yield [self] Executes a given block and calls `#save!`
-      # @yieldparam [self] self The newly created instance
-      # @return  [Spira::Base] The newly created instance
-      # @see http://rdf.rubyforge.org/RDF/URI.html
-      def for(identifier, attributes = {}, &block)
-        self.project(id_for(identifier), attributes, &block)
-      end
-      alias_method :[], :for
-
-      ##
-      # Create a new instance with the given subjet without any modification to
-      # the given subject at all.  This method exists to provide an entry point
-      # for implementing classes that want to create a more intelligent .for
-      # and/or .id_for for their given use cases, such as simple string
-      # appending to base URIs or calculated URIs from other representations.
-      #
-      # @example Using simple string concatentation with base_uri in .for instead of joining delimiters
-      #     def for(identifier, attributes = {}, &block)
-      #       self.project(RDF::URI(self.base_uri.to_s + identifier.to_s), attributes, &block)
-      #     end
-      # @param [RDF::URI, RDF::Node] subject
-      # @param [Hash{Symbol => Any}] attributes Initial attributes
-      # @return [Spira::Base] the newly created instance
-      def project(subject, attributes = {}, &block)
-        if !type.nil? && attributes[:type]
-          raise TypeError, "#{self} has an RDF type, #{self.type}, and cannot accept one as an argument."
-        end
-        new(attributes.merge(:_subject => subject), &block)
-      end
-
-      ##
-      # Creates a URI or RDF::Node based on a potential base_uri and string,
-      # URI, or Node, or Addressable::URI.  If not a URI or Node, the given
-      # identifier should be a string representing an absolute URI, or
-      # something responding to to_s which can be appended to a base URI, which
-      # this class must have.
-      #
-      # @param  [Any] Identifier
-      # @return [RDF::URI, RDF::Node]
-      # @raise  [ArgumentError] If this class cannot create an identifier from the given argument
-      # @see http://rdf.rubyforge.org/RDF/URI.html
-      # @see Spira.base_uri
-      # @see Spira.for
-      def id_for(identifier)
-        case
-          # Absolute URI's go through unchanged
-        when identifier.is_a?(RDF::URI) && identifier.absolute?
-          identifier
-          # We don't have a base URI to join this fragment with, so go ahead and instantiate it as-is.
-        when identifier.is_a?(RDF::URI) && self.base_uri.nil?
-          identifier
-          # Blank nodes go through unchanged
-        when identifier.respond_to?(:node?) && identifier.node?
-          identifier
-          # Anything that can be an RDF::URI, we re-run this case statement
-          # on it for the fragment logic above.
-        when identifier.respond_to?(:to_uri) && !identifier.is_a?(RDF::URI)
-          id_for(identifier.to_uri)
-          # see comment with #to_uri above, this might be a fragment
-        when identifier.is_a?(Addressable::URI)
-          id_for(RDF::URI.intern(identifier))
-          # This is a #to_s or a URI fragment with a base uri.  We'll treat them the same.
-          # FIXME: when #/ makes it into RDF.rb proper, this can all be wrapped
-          # into the one case statement above.
-        else
-          uri = identifier.is_a?(RDF::URI) ? identifier : RDF::URI.intern(identifier.to_s)
-          case
-          when uri.absolute?
-            uri
-          when self.base_uri.nil?
-            raise ArgumentError, "Cannot create identifier for #{self} by String without base_uri; an RDF::URI is required"
-          else
-            separator = self.base_uri.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
-            RDF::URI.intern(self.base_uri.to_s + separator + identifier.to_s)
-          end
-        end
-      end
-
-
-      ##
       # The number of URIs projectable as a given class in the repository.
       # This method is only valid for classes which declare a `type` with the
-      # `type` method in the DSL.
+      # `type` method in the Resource.
       #
       # @raise  [Spira::NoTypeError] if the resource class does not have an RDF type declared
       # @return [Integer] the count
       def count
-        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
-        repository.query(:predicate => RDF.type, :object => @type).subjects.count
+        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if type.nil?
+        repository.query(:predicate => RDF.type, :object => type).subjects.count
       end
 
       ##
@@ -208,7 +135,7 @@ module Spira
       ##
       # Enumerate over all resources projectable as this class.  This method is
       # only valid for classes which declare a `type` with the `type` method in
-      # the DSL.
+      # the Resource.
       #
       # @raise  [Spira::NoTypeError] if the resource class does not have an RDF type declared
       # @overload each
@@ -220,10 +147,10 @@ module Spira
       # @overload each
       #   @return [Enumerator]
       def each
-        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if @type.nil?
+        raise Spira::NoTypeError, "Cannot count a #{self} without a reference type URI." if type.nil?
 
         if block_given?
-          repository.query(:predicate => RDF.type, :object => @type).each_subject do |subject|
+          repository.query(:predicate => RDF.type, :object => type).each_subject do |subject|
             cache[subject] ||= self.for(subject)
             yield cache[subject]
           end
@@ -252,10 +179,9 @@ module Spira
       private
 
       def inherited(child)
-        child.properties ||= HashWithIndifferentAccess.new
-        # TODO: get rid of this
-        # (shouldn't use "type" both as a DSL setter and class getter)
-        child.instance_variable_set(:@type, type) if type
+        child.instance_variable_set :@properties, @properties.dup
+        child.instance_variable_set :@reflections, @reflections.dup
+        super
       end
 
       ##
@@ -265,137 +191,6 @@ module Spira
       # @private
       def cache
         @cache ||= RDF::Util::Cache.new
-      end
-
-      ##
-      # The list of validation functions for this projection
-      #
-      # @return [Array<Symbol>]
-      def validators
-        @validators ||= []
-      end
-
-      # Build a Ruby value from an RDF value.
-      #
-      # @private
-      def build_value(node, type, cache)
-        if cache[node]
-          cache[node]
-        else
-          klass = classize_resource(type)
-          if klass.respond_to?(:unserialize)
-            if klass.ancestors.include?(Spira::Base)
-              cache[node] = promise { klass.unserialize(node, :_cache => cache) }
-            else
-              klass.unserialize(node)
-            end
-          else
-            raise TypeError, "Unable to unserialize #{node} as #{type}"
-          end
-        end
-      end
-
-      # Build an RDF value from a Ruby value for a property
-      # @private
-      def build_rdf_value(value, type)
-        klass = classize_resource(type)
-        if klass.respond_to?(:serialize)
-          # value is a Spira resource of "type"?
-          if value.class.ancestors.include?(Spira::Base)
-            if klass.ancestors.include?(value.class)
-              value.subject
-            else
-              raise TypeError, "#{value} is an instance of #{value.class}, expected #{klass}"
-            end
-          else
-            klass.serialize(value)
-          end
-        else
-          raise TypeError, "Unable to serialize #{value} as #{type}"
-        end
-      end
-
-      # Return the appropriate class object for a string or symbol
-      # representation.  Throws errors correctly if the given class cannot be
-      # located, or if it is not a Spira::Base
-      #
-      def classize_resource(type)
-        return type unless type.is_a?(Symbol) || type.is_a?(String)
-
-	klass = nil
-	begin
-	  klass = qualified_const_get(type.to_s)
-	rescue NameError
-	  raise NameError, "Could not find relation class #{type} (referenced as #{type} by #{self})"
-	end
-	klass
-      end
-
-      # Resolve a constant from a string, relative to this class' namespace, if
-      # available, and from root, otherwise.
-      #
-      # FIXME: this is not really 'qualified', but it's one of those
-      # impossible-to-name functions.  Open to suggestions.
-      #
-      # @author njh
-      # @private
-      def qualified_const_get(str)
-	path = str.to_s.split('::')
-	from_root = path[0].empty?
-	if from_root
-	  from_root = []
-	  path = path[1..-1]
-	else
-	  start_ns = ((Class === self)||(Module === self)) ? self : self.class
-	  from_root = start_ns.to_s.split('::')
-	end
-	until from_root.empty?
-	  begin
-	    return (from_root+path).inject(Object) { |ns,name| ns.const_get(name) }
-	  rescue NameError
-	    from_root.delete_at(-1)
-	  end
-	end
-	path.inject(Object) { |ns,name| ns.const_get(name) }
-      end
-
-      ##
-      # Determine the type for a property based on the given type option
-      #
-      # @param [nil, Spira::Type, Constant] type
-      # @return Spira::Type
-      # @private
-      def type_for(type)
-        case
-        when type.nil?
-          Spira::Types::Any
-        when type.is_a?(Symbol) || type.is_a?(String)
-          type
-        when !(Spira.types[type].nil?)
-          Spira.types[type]
-        else
-          raise TypeError, "Unrecognized type: #{type}"
-        end
-      end
-
-      ##
-      # Determine the predicate for a property based on the given predicate, name, and default vocabulary
-      #
-      # @param  [#to_s, #to_uri] predicate
-      # @param  [Symbol] name
-      # @return [RDF::URI]
-      # @private
-      def predicate_for(predicate, name)
-        case
-        when predicate.respond_to?(:to_uri) && predicate.to_uri.absolute?
-          predicate
-        when @default_vocabulary.nil?
-          raise ResourceDeclarationError, "A :predicate option is required for types without a default vocabulary"
-        else
-          # FIXME: use rdf.rb smart separator after 0.3.0 release
-          separator = @default_vocabulary.to_s[-1,1] =~ /(\/|#)/ ? '' : '/'
-          RDF::URI.intern(@default_vocabulary.to_s + separator + name.to_s)
-        end
       end
 
       def find_all conditions, options = {}
@@ -426,92 +221,22 @@ module Spira
       new_record? ? nil : subject.path.split(/\//).last
     end
 
-    # A resource is considered to be new
-    # when its definition ("resource - RDF.type - X") is not persisted,
-    # although its properties may be in the storage.
-    def new_record?
-      !self.class.all.detect{|rs| rs.subject == subject }
-    end
-
-    def destroyed?
-      @destroyed
-    end
-
-    def persisted?
-      !(new_record? || destroyed?)
-    end
-
-    def save(*)
-      if run_callbacks(:validation) { validate }
-        run_callbacks :save do
-          # "create" callback is triggered only when persisting a resource definition
-          persistance_callback = new_record? && type ? :create : :update
-          run_callbacks persistance_callback do
-            if new_record? && subject.anonymous? && type
-              # "materialize" the resource
-              @subject = self.class.id_for(subject.id)
-            end
-            persist!
-          end
-        end
-        self
-      else
-        # return nil if could not save the record
-        # (i.e. there are validation errors)
-        nil
-      end
-    end
-
-    def save!
-      save || raise(ValidationError, "Could not save #{self.inspect} due to validation errors: " + errors.each.join(';'))
-    end
-
-    def destroy(*args)
-      run_callbacks :destroy do
-        (@destroyed ||= destroy!(*args)) && !!freeze
-      end
-    end
-
-    def update_attributes(attributes, options = {})
-      update(attributes)
-      save
-    end
-
     ##
     # Initialize a new Spira::Base instance of this resource class using
     # a new blank node subject.  Accepts a hash of arguments for initial
     # attributes.  To use a URI or existing blank node as a subject, use
     # {Spira.for} instead.
     #
-    # @param [Hash{Symbol => Any}] opts Default attributes for this instance
+    # @param [Hash{Symbol => Any}] props Default attributes for this instance
     # @yield [self] Executes a given block
     # @yieldparam [self] self The newly created instance
     # @see Spira.for
     # @see RDF::URI#as
     # @see RDF::Node#as
-    def initialize(opts = {})
-      @subject = opts.delete(:_subject) || RDF::Node.new
-      reload opts
+    def initialize(props = {}, options = {})
+      @subject = props.delete(:_subject) || RDF::Node.new
+      reload props
       yield self if block_given?
-    end
-
-    ##
-    # Reload all attributes for this instance, overwriting or setting
-    # defaults with the given opts.  This resource will block if the
-    # underlying repository blocks the next time it accesses attributes.
-    #
-    # @param   [Hash{Symbol => Any}] opts
-    # @option opts [Symbol] :any A property name.  Sets the given property to the given value.
-    def reload(opts = {})
-      @errors = Spira::Errors.new
-      @cache = opts.delete(:_cache) || RDF::Util::Cache.new
-      @cache[subject] = self
-      @dirty = HashWithIndifferentAccess.new
-      @attributes = {}
-      @attributes[:current] = HashWithIndifferentAccess.new
-      @attributes[:copied] = reset_properties
-      @attributes[:original] = promise { reload_properties }
-      update opts
     end
 
     ##
@@ -527,75 +252,6 @@ module Spira
     end
 
     ##
-    # Delete this instance from the repository.
-    #
-    # @param [Symbol] what
-    # @example Delete all fields defined in the model
-    #     @object.destroy!
-    # @example Delete all instances of this object as the subject of a triple, including non-model data @object.destroy!
-    #     @object.destroy!(:subject)
-    # @example Delete all instances of this object as the object of a triple
-    #     @object.destroy!(:object)
-    # @example Delete all triples with this object as the subject or object
-    #     @object.destroy!(:completely)
-    # @return [true, false] Whether or not the destroy was successful
-    def destroy!(what = nil)
-      case what
-      when nil
-        destroy_properties(attributes, :destroy_type => true) != nil
-      when :subject
-        self.class.repository.delete([subject, nil, nil]) != nil
-      when :object
-        self.class.repository.delete([nil, nil, subject]) != nil
-      when :completely
-        destroy!(:subject) && destroy!(:object)
-      end
-    end
-
-    ##
-    # Update multiple attributes of this repository.
-    #
-    # @example Update multiple attributes
-    #     person.update(:name => 'test', :age => 10)
-    #     #=> person
-    #     person.name
-    #     #=> 'test'
-    #     person.age
-    #     #=> 10
-    #     person.dirty?
-    #     #=> true
-    # @param  [Hash{Symbol => Any}] properties
-    # @return [self]
-    def update(properties)
-      properties.each do |property, value|
-        # using a setter instead of write_attribute
-        # to account for user-defined setter methods
-        # (usually overriding standard ones)
-        send "#{property}=", value
-      end
-      self
-    end
-
-    ##
-    # Equivalent to #update followed by #save!
-    #
-    # @example Update multiple attributes and save the changes
-    #     person.update!(:name => 'test', :age => 10)
-    #     #=> person
-    #     person.name
-    #     #=> 'test'
-    #     person.age
-    #     #=> 10
-    #     person.dirty?
-    #     #=> false
-    # @param  [Hash{Symbol => Any}] properties
-    # @return [self]
-    def update!(properties)
-      update(properties)
-      save!
-    end
-
-    ##
     # The `RDF.type` associated with this class.
     #
     # @return [nil,RDF::URI] The RDF type associated with this instance's class.
@@ -603,13 +259,8 @@ module Spira
       self.class.type
     end
 
-    ##
-    # `type` is a special property which is associated with the class and not
-    # the instance.  Always raises a TypeError to try and assign it.
-    #
-    # @raise [TypeError] always
-    def type=(type)
-      raise TypeError, "Cannot reassign RDF.type for #{self}; consider appending to a has_many :types"
+    def types
+      self.class.types
     end
 
     ##
@@ -744,28 +395,6 @@ module Spira
     end
 
     ##
-    # Run any model validations and populate the errors object accordingly.
-    # Returns true if the model is valid, false otherwise
-    #
-    # @return [True, False]
-    def validate
-      unless self.class.send(:validators).empty?
-        errors.clear
-        self.class.send(:validators).each do | validator | self.send(validator) end
-      end
-      errors.empty?
-    end
-
-    ##
-    # Run validations on this model and raise a Spira::ValidationError if the validations fail.
-    #
-    # @see #validate
-    # @return true
-    def validate!
-      validate || raise(ValidationError, "Failed to validate #{self.inspect}: " + errors.each.join(';'))
-    end
-
-    ##
     # Returns true if any data exists for this subject in the backing RDF store
     # TODO: This method *maybe* should be obsoleted by #persisted? from ActiveModel;
     #       the name is also misleading because "exists?" is not the same as "!new_record?",
@@ -847,13 +476,6 @@ module Spira
 
     private
 
-    def store_attribute(property, value, predicate, repository)
-      unless value.nil?
-        val = self.class.send(:build_rdf_value, value, self.class.properties[property][:type])
-        repository.insert(RDF::Statement.new(subject, predicate, val))
-      end
-    end
-
     def write_attribute(name, value)
       if self.class.properties[name]
         @dirty[name] = true
@@ -889,31 +511,6 @@ module Spira
     end
 
     ##
-    # Save changes to the repository
-    #
-    def persist!
-      repo = self.class.repository
-      self.class.properties.each do |name, property|
-        value = read_attribute name
-        if dirty?(name)
-          repo.delete([subject, property[:predicate], nil])
-          if self.class.reflect_on_association(name)
-            value.each do |val|
-              store_attribute(name, val, property[:predicate], repo)
-            end
-          else
-            store_attribute(name, value, property[:predicate], repo)
-          end
-        end
-        @attributes[:original][name] = value
-        @dirty[name] = nil
-        @attributes[:copied][name] = NOT_SET
-      end
-      repo.insert(RDF::Statement.new(@subject, RDF.type, type)) if type
-      self
-    end
-
-    ##
     # Create an RDF::Repository for the given attributes hash.  This could
     # just as well be a class method but is only used here in #save! and
     # #destroy!, so it is defined here for simplicity.
@@ -934,52 +531,13 @@ module Spira
       end
     end
 
-    ##
-    # Reload this instance's attributes.
-    #
-    # @return [Hash{Symbol => Any}] attributes
-    def reload_properties
-      statements = data
+    extend Resource
+    extend Reflections
+    include Types
+    include Persistence
+    include Validations
 
-      HashWithIndifferentAccess.new.tap do |attrs|
-        self.class.properties.each do |name, property|
-          if self.class.reflect_on_association(name)
-            value = Set.new
-            statements.each do |st|
-              if st.predicate == property[:predicate]
-                value << self.class.send(:build_value, st.object, property[:type], @cache)
-              end
-            end
-          else
-            statement = statements.detect {|st| st.predicate == property[:predicate] }
-            if statement
-              value = self.class.send(:build_value, statement.object, property[:type], @cache)
-            end
-          end
-          attrs[name] = value
-        end
-      end
-    end
-
-    ##
-    # Remove the given attributes from the repository
-    #
-    # @param [Hash] attributes The hash of attributes to delete
-    # @param [Hash{Symbol => Any}] opts Options for deletion
-    # @option opts [true] :destroy_type Destroys the `RDF.type` statement associated with this class as well
-    def destroy_properties(attrs, opts = {})
-      repository = repository_for_attributes(attrs)
-      repository.insert([@subject, RDF.type, self.class.type]) if (self.class.type && opts[:destroy_type])
-      self.class.repository.delete(*repository)
-    end
-
-    def reset_properties
-      HashWithIndifferentAccess.new.tap do |attrs|
-        self.class.properties.each do |name, _|
-          attrs[name] = NOT_SET
-        end
-      end
-    end
-
+    @reflections = HashWithIndifferentAccess.new
+    @properties = HashWithIndifferentAccess.new
   end
 end
